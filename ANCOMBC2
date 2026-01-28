@@ -1,0 +1,30 @@
+
+### Analysis of Compositions of Microbiome with Bias Correction2 (ANCOM-BC2)
+library(ANCOMBC)
+library(microbiome)
+library(phyloseq)
+library(lmerTest)
+
+## ANCOM-BC2 analysis between rehabilitation periods
+# phyobj: Phyloseq object of interest
+sample_data(phyobj)$Week <- as.factor(sample_data(phyobj)$Week)
+
+ancom_out_tax <- ancombc2(data = phyobj,
+                          fix_formula = "Week", 
+                          p_adj_method = "BH",
+                          pseudo_sens = TRUE,
+                          group = "Week",
+                          pairwise = TRUE)
+                          
+res_df_tax <- ancom_out_tax$res
+
+
+## ANCOM-BC2 analysis between seasons
+sample_data(phyobj)$Season <- as.factor(sample_data(phyobj)$Season)
+
+ancom_out_wild <- ancombc2(data = phyobj,
+                          fix_formula = "Season", 
+                          p_adj_method = "BH",
+                          pseudo_sens = TRUE,
+                          group = "Season")
+

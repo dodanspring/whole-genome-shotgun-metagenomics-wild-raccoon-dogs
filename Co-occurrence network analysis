@@ -1,0 +1,124 @@
+
+## Correlation analysis on microbiome-mobilome-resistome
+library(reshape2)
+library(SpiecEasi)
+
+# subset dataset by rehabilitation weeks
+arg_0w <- subset_samples(arg_ps, Group == "wild")
+arg_0w <- prune_taxa(taxa_sums(arg_0w) > 0, arg_0w)
+arg_4w <- subset_samples(arg_ps, Group == "during")
+arg_4w <- prune_taxa(taxa_sums(arg_4w) > 0, arg_4w)
+arg_8w <- subset_samples(arg_ps, Group == "release")
+arg_8w <- prune_taxa(taxa_sums(arg_8w) > 0, arg_8w)
+
+physeq_0w <- subset_samples(physeq_filtered, Group == "wild")
+physeq_0w <- prune_taxa(taxa_sums(physeq_0w) > 0, physeq_0w)
+physeq_4w <- subset_samples(physeq_filtered, Group == "during")
+physeq_4w <- prune_taxa(taxa_sums(physeq_4w) > 0, physeq_4w)
+physeq_8w <- subset_samples(physeq_filtered, Group == "release")
+physeq_8w <- prune_taxa(taxa_sums(physeq_8w) > 0, physeq_8w)
+
+mge_fam_0w <- tax_glom(mge_0w, taxrank = "ta2")
+mge_fam_0w <- prune_taxa(taxa_sums(mge_fam_0w) > 0, mge_fam_0w)
+mge_fam_4w <- tax_glom(mge_4w, taxrank = "ta2")
+mge_fam_4w <- prune_taxa(taxa_sums(mge_fam_4w) > 0, mge_fam_4w)
+mge_fam_8w <- tax_glom(mge_8w, taxrank = "ta2")
+mge_fam_8w <- prune_taxa(taxa_sums(mge_fam_8w) > 0, mge_fam_8w)
+
+# Get shared samples across all three
+#WEEK: rehabilitation period of interest (0w, 4w, and 8w)
+shared_samples <- Reduce(intersect, list(
+  sample_names(physeq_WEEK),
+  sample_names(arg_WEEK),
+  sample_names(mge_fam_WEEK)
+))
+
+phy_micro_shared <- prune_samples(shared_samples, physeq_WEEK)
+arg_shared <- prune_samples(shared_samples, arg_WEEK)
+mge_shared <- prune_samples(shared_samples, mge_fam_WEEK)
+
+phy_micro_rel <- transform_sample_counts(phy_micro_shared, function(x) x / sum(x))
+arg_rel <- transform_sample_counts(arg_shared, function(x) x / sum(x))
+mge_rel <- transform_sample_counts(mge_shared, function(x) x / sum(x))
+
+micro_abund <- as.data.frame(t(otu_table(phy_micro_rel)))
+arg_abund <- as.data.frame(t(otu_table(arg_rel)))
+mge_abund <- as.data.frame(t(otu_table(mge_rel)))
+
+# Rename columns by taxonomy
+tax_micro <- as.data.frame(tax_table(phy_micro_rel))
+tax_arg <- as.data.frame(tax_table(arg_rel))
+tax_mge <- as.data.frame(tax_table(mge_rel))
+
+colnames(micro_abund) <- make.unique(as.character(tax_micro[colnames(micro_abund), "Species"]))  # or "Family"
+colnames(arg_abund)   <- make.unique(as.character(tax_arg[colnames(arg_abund), "ta4"]))
+colnames(mge_abund)   <- make.unique(as.character(tax_mge[colnames(mge_abund), "ta2"]))
+
+colnames(micro_abund) <- paste0("Micro_", colnames(micro_abund))
+colnames(arg_abund)   <- paste0("ARG_", colnames(arg_abund))
+colnames(mge_abund)   <- paste0("MGE_", colnames(mge_abund))
+
+# Combine by sample
+common_samples <- Reduce(intersect, list(
+  rownames(micro_abund),
+  rownames(arg_abund),
+  rownames(mge_abund)
+))
+
+merged_matrix <- cbind(
+  micro_abund[common_samples, ],
+  arg_abund[common_samples, ],
+  mge_abund[common_samples, ]
+)
+
+# Replace zeros for SparCC
+merged_matrix[merged_matrix == 0] <- min(merged_matrix[merged_matrix > 0]) / 2
+merged_matrix <- as.matrix(merged_matrix)
+
+n_boot <- 100
+set.seed(42)
+sparcc_res <- sparcc(merged_matrix)
+sparcc_corr <- sparcc_res$Cor
+
+boot_corrs <- list()
+pb <- txtProgressBar(min = 0, max = n_boot, style = 3)
+
+for (i in 1:n_boot) {
+  permuted <- apply(merged_matrix, 2, sample)
+  boot_corrs[[i]] <- sparcc(permuted)$Cor
+  setTxtProgressBar(pb, i)
+}
+jkkclose(pb)
+
+
+boot_array <- simplify2array(boot_corrs)
+pval_matrix <- matrix(NA, nrow = ncol(merged_matrix), ncol = ncol(merged_matrix))
+for (i in 1:ncol(merged_matrix)) {
+  for (j in 1:ncol(merged_matrix)) {
+    null_dist <- boot_array[i, j, ]
+    pval_matrix[i, j] <- mean(abs(null_dist) >= abs(sparcc_corr[i, j]))
+  }
+}
+threshold_r <- 0.3
+threshold_p <- 0.05
+sig_mat <- sparcc_corr
+sig_mat[pval_matrix > threshold_p | abs(sig_mat) < threshold_r] <- 0
+all_labels <- c(colnames(micro_abund), colnames(arg_abund), colnames(mge_abund))
+colnames(sig_mat) <- all_labels
+rownames(sig_mat) <- all_labels
+
+edges <- melt(sig_mat)
+edges <- subset(edges, value != 0 & Var1 != Var2)
+colnames(edges) <- c("from", "to", "weight")
+
+cross_edges <- subset(edges,
+                      (grepl("^Micro_", from) & grepl("^ARG_|^MGE_", to)) |
+                        (grepl("^MGE_", from)   & grepl("^Micro_|^ARG_", to)) |
+                        (grepl("^ARG_", from)   & grepl("^Micro_|^MGE_", to))
+)
+
+net <- graph_from_data_frame(cross_edges, directed = FALSE)
+
+write_graph(net, "Micro_ARG_MGE_SparCC_Network.gml", format = "gml")
+# visualize co-occurrence network downstream in gephi
+

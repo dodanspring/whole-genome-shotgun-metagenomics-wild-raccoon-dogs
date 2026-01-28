@@ -1,0 +1,168 @@
+
+### Importing into R
+library(phyloseq)
+library(readxl)
+library(dplyr)
+library(tibble)
+library(readr)
+library(magrittr)
+
+## import microbiome
+
+s_abund <- read_excel("mpa_species_relab.xlsx")
+s_metadata <- read_excel("metadata.xlsx")
+s_metadata <- s_metadata %>% tibble::column_to_rownames("Names")
+
+s_tax_tab <- s_abund %>%
+  dplyr::rename("taxonomy" = "# taxonomy") %>%
+  dplyr::select(taxonomy) %>%
+  tidyr::separate(taxonomy, into = c("Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species"), sep = "\\|") %>%
+  dplyr::mutate(spec_row = Species) %>%
+  tibble::column_to_rownames(var = "spec_row")
+
+s_otu_tab <- s_abund %>%
+  dplyr::rename("taxonomy" = "# taxonomy") %>%
+  tidyr::separate(taxonomy, into = c("Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species"), sep = "\\|") %>%
+  dplyr::select(-Kingdom, -Phylum, -Class, -Order, -Family, -Genus) %>%
+  tibble::column_to_rownames(var = "Species")
+
+names(s_otu_tab) <- gsub(names(s_otu_tab), pattern = "_taxonomic_profile", replacement = "") 
+head(colSums(s_otu_tab))
+
+s_meta <- t(s_metadata)
+s_meta <- data.frame(s_meta)
+sample_dat = sample_data(s_meta)
+
+physeq_all <- phyloseq(sample_dat,
+                       otu_table(s_otu_tab, taxa_are_rows = TRUE),
+                       tax_table(as.matrix(s_tax_tab)))
+
+# subsetting into seasonal and rehabilitation period groups
+physeq <- subset_samples(physeq_all, Season == "summer")
+physeq <- prune_taxa(taxa_sums(physeq) > 0, physeq)
+physeq_wild <- subset_samples(physeq_all, Week == "0w")
+physeq_wild <- prune_taxa(taxa_sums(physeq_wild) > 0, physeq_wild)
+
+# filter by relative abundance
+physeq_rel <- transform_sample_counts(physeq, function(x) x / sum(x))
+phy_means <- taxa_sums(physeq_rel)
+threshold <- 0.0001  # 0.01%
+abundant_taxa <- names(phy_means[phy_means > threshold])
+physeq_filtered <- prune_taxa(abundant_taxa, physeq_rel)
+
+# filter by relative abundance - wild
+physeq_wild_rel <- transform_sample_counts(physeq_wild, function(x) x / sum(x))
+phy_means <- taxa_sums(physeq_wild_rel)
+threshold <- 0.0001  # 0.01%
+abundant_taxa <- names(phy_means[phy_means > threshold])
+physeq_wild_filtered <- prune_taxa(abundant_taxa, physeq_wild_rel)
+
+## Import virome
+v_abund <- read_tsv("abundance_contigs_rpkm.tsv")
+v_tax <- read_tsv("viral_taxonomy.tsv")
+v_abund <- v_abund %>% tibble::column_to_rownames("Contig")
+v_tax <- v_tax %>% tibble::column_to_rownames("contig_id")
+
+virome_all <- phyloseq(sample_dat, otu_table(v_abund, taxa_are_rows = TRUE), tax_table(as.matrix(v_tax)))
+View(virome_all)
+
+# subsetting into seasonal and rehabilitation period groups
+virome <- subset_samples(virome_all, Season == "summer")
+virome <- prune_taxa(taxa_sums(virome) > 0, virome)
+virome_wild <- subset_samples(virome_all, Week == "0w")
+virome_wild <- prune_taxa(taxa_sums(virome_wild) > 0, virome_wild)
+
+# filter by relative abundance
+viral_rel <- transform_sample_counts(virome, function(x) x / sum(x))
+phy_means <- taxa_sums(viral_rel)
+threshold <- 0.0001  # 0.01%
+abundant_taxa <- names(phy_means[phy_means > threshold])
+virome_filtered <- prune_taxa(abundant_taxa, virome)
+
+# filter by relative abundance - wild
+viral_wild_rel <- transform_sample_counts(virome_wild, function(x) x / sum(x))
+phy_means <- taxa_sums(viral_wild_rel)
+threshold <- 0.0001  # 0.01%
+abundant_taxa <- names(phy_means[phy_means > threshold])
+virome_wild_filtered <- prune_taxa(abundant_taxa, virome_wild)
+
+## Import ARGs
+arg <- read_excel("arg_RPKM.xlsx")
+arg_tax <- as.data.frame(read_excel("arg_taxonomy.xlsx"))
+# ARGs related to more than one drug class were grouped into "Multiple" manually
+mapping_table <- read_excel("drug_class_mapping.xlsx")
+
+# merge to apply mapping
+arg_tax_c <- arg_tax %>%
+  left_join(mapping_table, by = c("Drug_Class" = "Original_Drug_Class")) %>%
+  mutate(Final_Drug_Class = ifelse(is.na(New_Drug_Class), Drug_Class, New_Drug_Class)) %>%
+  select(-New_Drug_Class)  # Optional: remove intermediate column
+# exchange column order
+arg_tax_c <- arg_tax_c %>%
+  select(ARO_num, Final_Drug_Class, Drug_Class, AMR_Gene_Family, ARO_Name)
+
+aro_rowname <- arg_tax_c$`ARO_num`
+arg_tax_c <- arg_tax_c[,-1]
+arg_tax_t <- tax_table(arg_tax_c)
+rownames(arg_tax_t) <- aro_rowname
+
+arg_abund <- arg[,-1]
+rownames(arg_abund) <- aro_rowname
+
+arg_ps_all <- phyloseq(sample_dat, otu_table(arg_abund, taxa_are_rows = TRUE), tax_table(as.matrix(arg_tax_t)))
+arg_ps <- subset_samples(arg_ps_all, Season == "summer")
+arg_ps <- prune_taxa(taxa_sums(arg_ps) > 0, arg_ps)
+arg_ps_wild <- subset_samples(arg_ps_all_samples, Week == "0w")
+arg_ps_wild <- prune_taxa(taxa_sums(arg_ps_wild) > 0, arg_ps_wild)
+
+## Import VFGs
+vfg <- read_excel("VFG_RPKM.xlsx")
+vfg_tax <- as.data.frame(read_excel("VFDB_taxonomy.xlsx"))
+
+vfg_rowname <- vfg$`VFG`
+vfg_tax_rowname <- vfg_tax$'Gene_ID'
+
+vfg_abund <- vfg[,-1]
+rownames(vfg_abund) <- vfg_rowname
+
+vfg_tax_c <- vfg_tax[,-1]
+vfg_tax_t <- tax_table(vfg_tax_c)
+rownames(vfg_tax_t) <- vfg_tax_rowname
+
+head(colSums(vfg_abund))
+
+phy_vfg_all <- phyloseq(sample_dat,
+                        otu_table(vfg_abund, taxa_are_rows = TRUE),
+                        tax_table(as.matrix(vfg_tax_t)))
+phy_vfg <- subset_samples(phy_vfg_all, Season == "summer")
+phy_vfg <- prune_taxa(taxa_sums(phy_vfg) > 0, phy_vfg)
+vfg_wild <- subset_samples(phy_vfg_all, Week == "0w")
+vfg_wild <- prune_taxa(taxa_sums(vfg_wild) > 0, vfg_wild)
+
+## Import MGEs
+mge <- read_excel("MGE_RPKM.xlsx")
+mge_tax <- as.data.frame(read_excel("MGE_tax_table.xlsx"))
+
+mge_rowname <- mge$`MGE`
+mge_tax_rowname <- mge_tax$'MGE'
+
+mge_abund <- mge[,-1]
+rownames(mge_abund) <- mge_rowname
+
+mge_tax_c <- mge_tax[,-1]
+mge_tax_t <- tax_table(mge_tax_c)
+rownames(mge_tax_t) <- mge_tax_rowname
+
+phy_mge_all <- phyloseq(sample_dat,
+                    otu_table(mge_abund, taxa_are_rows = TRUE),
+                    tax_table(as.matrix(mge_tax_t)))
+
+phy_mge <- subset_samples(phy_mge_all, Season == "summer")
+phy_mge <- prune_taxa(taxa_sums(phy_mge) > 0, phy_mge)
+mge_wild <- subset_samples(phy_mge_all, Week == "0w")
+mge_wild <- prune_taxa(taxa_sums(mge_wild) > 0, mge_wild)
+
+
+
+
+

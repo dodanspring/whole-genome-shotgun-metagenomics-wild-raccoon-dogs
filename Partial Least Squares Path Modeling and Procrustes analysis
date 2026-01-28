@@ -1,0 +1,156 @@
+
+### Partial Least Squares Path Modeling (PLS-PM)
+
+library(phyloseq)
+library(microbiome)
+library(plspm)
+
+# Add pseudocount to avoid log(0)
+add_pseudocount <- function(mat) {
+  mat + 1e-6
+}
+
+# transform data using centered log ratio (CLR) method
+# phyobj: phyloseq object of each communities (e.g., microbiome, resistome, mobilome, virulome, virome)
+phyobj_clr <- transform_sample_counts(phyobj, add_pseudocount)
+phyobj_clr <- microbiome::transform(phyobj, "clr")
+
+# Subset each data into weeks
+phyobj_0w <- subset_samples(phyobj_clr, Week == "0w")
+phyobj_4w <- subset_samples(phyobj_clr, Week == "4w")
+phyobj_8w <- subset_samples(phyobj_clr, Week == "8w") 
+
+# Convert each community data into data frame
+#WEEK: insert rehabilitation period of interest
+physeq_clr_df <- as.data.frame(t(otu_table(physeq_WEEK)))
+phy_mge_clr_df <- as.data.frame(t(otu_table(mge_WEEK)))
+arg_ps_clr_df <- as.data.frame(t(otu_table(arg_WEEK)))
+phy_vfg_clr_df <- as.data.frame(t(otu_table(vfg_WEEK)))
+phy_virf_clr_df <- as.data.frame(t(otu_table(vir_WEEK)))
+
+# Add SampleID
+physeq_clr_df$SampleID <- rownames(physeq_clr_df)
+
+# Extract sample metadata
+sample_meta <- data.frame(sample_data(phyobj))
+sample_meta$SampleID <- rownames(sample_meta)
+sample_meta$Week_num <- as.numeric(gsub("w", "", sample_meta$Week))
+
+# Merge all data
+merged_clr_df <- sample_meta %>%
+  inner_join(physeq_clr_df,  by = "SampleID") %>%
+  inner_join(phy_virf_clr_df, by = "SampleID") %>%   # add virome here
+  inner_join(phy_mge_clr_df, by = "SampleID") %>%
+  inner_join(phy_vfg_clr_df, by = "SampleID") %>%
+  inner_join(arg_ps_clr_df,  by = "SampleID")
+
+# Latent variables: Microbiome, MGE, VFG, ARG, Virome
+M <- matrix(c(
+  0, 0, 0, 0, 0,  
+  1, 0, 0, 0, 0, 
+  1, 0, 0, 0, 0,  
+  1, 0, 1, 0, 0, 
+  1, 0, 1, 1, 0   
+), nrow = 5, byrow = TRUE)
+
+colnames(M) <- rownames(M) <- c("Microbiome", "Virome", "MGE", "VFG", "ARG")
+
+n_microbe <- ncol(physeq_clr_df)   - 1
+n_vfg     <- ncol(phy_vfg_clr_df)  - 1
+n_mge     <- ncol(phy_mge_clr_df)  - 1
+n_arg     <- ncol(arg_ps_clr_df)   - 1
+n_vir     <- ncol(phy_virf_clr_df) - 1
+
+blocks <- list(
+  1:n_microbe,
+  (n_microbe + 1):(n_microbe + n_vir),
+  (n_microbe + n_vir + 1):(n_microbe + n_vir + n_mge),
+  (n_microbe + n_vir + n_mge + 1):(n_microbe + n_vir + n_mge + n_vfg),
+  (n_microbe + n_vir + n_mge + n_vfg + 1):
+    (n_microbe + n_vir + n_mge + n_vfg + n_arg)
+)
+
+pls_model_WEEK <- plspm(
+  Data        = merged_clr_df,
+  path_matrix = M,
+  blocks      = blocks,
+  modes       = rep("A", 5),
+  boot.val    = TRUE,
+  br = 1000
+)
+
+### Procrustes analysis
+library(vegan)
+library(phyloseq)
+library(ggplot2)
+library(dplyr)
+
+## e.g., Procrustes analysis between virome and microbiome(bacterial community)
+# subset to shared samples
+# virome, physeq: can be replaced by other communities of interest
+shared_samples <- intersect(sample_names(virome), sample_names(physeq))
+virseq_shared <- prune_samples(shared_samples, virome)
+physeq_filtered_shared <- prune_samples(shared_samples, physeq)
+
+taxa_table <- as.data.frame(t(otu_table(virseq_shared)))
+physeq_table  <- as.data.frame(t(otu_table(physeq_filtered_shared)))
+
+dist_taxa <- vegdist(taxa_table, method = "bray")
+dist_physeq  <- vegdist(physeq_table, method = "bray")
+
+pcoa_taxa <- cmdscale(dist_taxa, k = 2, eig = TRUE)
+pcoa_physeq  <- cmdscale(dist_physeq, k = 2, eig = TRUE)
+
+# Procrustes Test
+set.seed(123)
+prot <- protest(pcoa_taxa$points, pcoa_physeq$points, permutations = 9999)
+print(prot)
+
+# Preparation for visualization
+micro_coords <- as.data.frame(proc$Yrot)  
+physeq_coords   <- as.data.frame(proc$X)   
+samples <- rownames(micro_coords)
+micro_coords$Sample <- samples
+physeq_coords$Sample <- samples
+
+colnames(micro_coords) <- c("PC1", "PC2", "Sample")
+colnames(physeq_coords) <- c("PC1", "PC2", "Sample")
+micro_coords$Sample <- rownames(micro_coords)
+physeq_coords$Sample <- rownames(physeq_coords)
+
+micro_coords$Type <- "Virome"
+physeq_coords$Type <- "Microbial taxa"
+
+lines_df <- NULL
+lines_df <- left_join(
+  micro_coords %>% rename(xend = PC1, yend = PC2),
+  physeq_coords %>% rename(x = PC1, y = PC2),
+  by = "Sample"
+)
+combined <- rbind(micro_coords, physeq_coords)
+
+r_value <- round(prot$t0, 3)
+p_value <- round(prot$signif, 4)
+
+# Plot
+procrustes_plot <- ggplot() +
+  geom_segment(data = lines_df,
+               aes(x = x, y = y, xend = xend, yend = yend),
+               color = "black", linewidth = 0.5, alpha = 0.7) +
+  
+  geom_point(data = combined,
+             aes(x = PC1, y = PC2, shape = Type, fill = Type),
+             size = 3, color = "black") +
+  
+  scale_shape_manual(values = c("Virome" = 23, "Microbial taxa" = 21)) +
+  scale_fill_manual(values = c("Virome" = "blue", "Microbial taxa" = "orange")) +
+  
+  labs(
+    title = "Procrustes Analysis: 8w raccoon dogs",
+    subtitle = paste0("Procrustes r = ", r_value, ", p-value = ", p_value),
+    x = "PCoA 1", y = "PCoA 2",
+    shape = "Data Type", fill = "Data Type"
+  ) +
+  
+  theme_minimal() +
+  theme(legend.position = "right")

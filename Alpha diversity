@@ -1,0 +1,161 @@
+
+### Alpha diversity
+library(phyloseq)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(ggpubr)
+
+## phyobj: target phyloseq object (e.g., physeq_filtered, arg_ps)
+## Analyzing alpha diversity by rehabilitation weeks
+# Calculate alpha diversity (Shannon)
+alpha_df <- estimate_richness(phyobj, measures = "Shannon")
+alpha_df$SampleID <- rownames(alpha_df)
+
+# Merge with sample metadata
+alpha_df <- cbind(alpha_df, sample_data(phyobj)[alpha_df$SampleID])
+
+# Reshape to wide format for paired testing
+alpha_wide <- reshape(
+  alpha_df[, c("ID", "Week", "Shannon")],
+  timevar = "Week",
+  idvar = "ID",
+  direction = "wide"
+)
+
+# Filter only IDs with complete data
+alpha_wide_clean <- alpha_wide[complete.cases(alpha_wide[, c("Shannon.0w", "Shannon.4w", "Shannon.8w")]), ]
+paired_ids <- alpha_wide_clean$ID
+
+# Print sample size after filtering
+cat("Number of complete pairs:", nrow(alpha_wide_clean), "\n")
+
+# Step2 : Perform paired wilcoxon tests
+# Run paired Wilcoxon tests
+pval_04 <- wilcox.test(alpha_wide_clean$Shannon.0w, alpha_wide_clean$Shannon.4w, paired = TRUE)$p.value
+pval_08 <- wilcox.test(alpha_wide_clean$Shannon.0w, alpha_wide_clean$Shannon.8w, paired = TRUE)$p.value
+pval_48 <- wilcox.test(alpha_wide_clean$Shannon.4w, alpha_wide_clean$Shannon.8w, paired = TRUE)$p.value
+
+# Convert p-values to significance stars
+get_star <- function(p) {
+  if (p < 0.001) return("***")
+  else if (p < 0.01) return("**")
+  else if (p < 0.05) return("*")
+  else return("ns")
+}
+
+stars <- list(
+  "0w_vs_4w" = get_star(pval_04),
+  "0w_vs_8w" = get_star(pval_08),
+  "4w_vs_8w" = get_star(pval_48)
+)
+
+# Prepare data for plotting
+alpha_plot_df <- alpha_df[, c("ID", "Week", "Shannon")]
+alpha_plot_df$Week <- factor(alpha_plot_df$Week, levels = c("0w", "4w", "8w"))
+alpha_plot_df_clean <- alpha_plot_df %>%
+  filter(ID %in% paired_ids)
+
+# Create paired boxplot
+# Create the base plot
+Shannon_barplot <- ggplot(alpha_plot_df_clean, aes(x = Week, y = Shannon, fill = Week)) +
+  geom_boxplot(outlier.shape = NA, color = "black", width = 0.6) +
+  geom_jitter(aes(group = ID), width = 0.1, size = 2, alpha = 0.6, color = "black") +
+  geom_line(aes(group = ID), color = "gray60", linewidth = 0.5, alpha = 0.6) +
+  labs(
+    title = "Alpha Diversity (Shannon Index)",
+    y = "Shannon Diversity",
+    x = "Week"
+  ) +
+  scale_fill_manual(values = my_group_colors) +
+  theme_minimal() +
+  theme(
+    text = element_text(size = 12),
+    axis.text.x = element_text(angle = 0, hjust = 0.5)
+  )
+# Calculate y-axis maximum
+y_max <- max(alpha_plot_df_clean$Shannon, na.rm = TRUE)
+y_buffer <- y_max * 0.05  # 5% of max for spacing
+
+# Create the plot
+Shannon_barplot +
+  scale_y_continuous(limits = c(0, y_max + y_buffer * 6), expand = expansion(mult = c(0, 0.05))) +
+  
+  # Bar for 0w vs 4w
+  geom_segment(aes(x = 1, xend = 2, y = y_max + y_buffer, yend = y_max + y_buffer), color = "black", linewidth = 0.5) +
+  annotate("text", x = 1.5, y = y_max + y_buffer * 1.5, label = stars$`0w_vs_4w`, size = 4) +
+  
+  # Bar for 0w vs 8w
+  geom_segment(aes(x = 1, xend = 3, y = y_max + y_buffer * 2.5, yend = y_max + y_buffer * 2.5), color = "black", linewidth = 0.5) +
+  annotate("text", x = 2, y = y_max + y_buffer * 3, label = stars$`0w_vs_8w`, size = 4) +
+  
+  # Bar for 4w vs 8w
+  geom_segment(aes(x = 2, xend = 3, y = y_max + y_buffer * 4.5, yend = y_max + y_buffer * 4.5), color = "black", linewidth = 0.5) +
+  annotate("text", x = 2.5, y = y_max + y_buffer * 5, label = stars$`4w_vs_8w`, size = 4)
+
+## Analyzing alpha diversity by rescued seasons
+# Correct way to extract and convert sample metadata from a phyloseq object
+metadata_box_df <- as.data.frame(as.matrix(sample_data(phyobj)))
+
+# Add ID column for merging
+metadata_box_df$ID <- rownames(metadata_box_df)
+
+# Prepare alpha diversity table
+alpha_df <- estimate_richness(phyobj, measures = "Shannon")
+alpha_df$ID <- rownames(alpha_df)
+
+# Merge alpha diversity with metadata
+alpha_plot_df <- merge(alpha_df, metadata_box_df, by = "ID")
+
+# Wilcoxon test
+wilcox_res <- wilcox.test(Shannon ~ Season, data = alpha_plot_df)
+print(wilcox_res)
+
+# Determine max value for annotation
+y_max <- max(alpha_plot_df$Shannon, na.rm = TRUE)
+y_buffer <- y_max * 0.05
+
+# Boxplot
+ggplot(alpha_plot_df, aes(x = Season, y = Shannon, fill = Season)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.7) +
+  geom_jitter(width = 0.2, size = 1, alpha = 0.6) +
+  theme_minimal() +
+  labs(title = "Shannon Diversity by Season",
+       y = "Shannon Index", x = "") +
+  theme(legend.position = "none") +
+  scale_fill_manual(values = my_group_colors) +
+  # Add to plot
+  annotate("text", x = 1.5, y = y_max + y_buffer, label = annot_label)
+
+get_star <- function(p) {
+  if (p < 0.001) return("***")
+  else if (p < 0.01) return("**")
+  else if (p < 0.05) return("*")
+  else return("ns")
+}
+
+annot_label <- get_star(wilcox_res$p.value)
+
+# Calculate y-position for the annotation line
+y_max <- max(alpha_plot_df$Shannon, na.rm = TRUE)
+y_buffer <- y_max * 0.05
+line_y <- y_max + y_buffer
+
+# Adjust x-axis values based on your Season order
+boxplot_levels <- levels(factor(alpha_plot_df$Season))
+x1 <- 1  # left box
+x2 <- 2  # right box
+
+# Plot with a line and a p-value
+ggplot(alpha_plot_df, aes(x = Season, y = Shannon, fill = Season)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.7) +
+  geom_jitter(width = 0.2, size = 1, alpha = 0.6) +
+  theme_minimal() +
+  labs(title = "Shannon Diversity by Season", y = "Shannon Index", x = "") +
+  theme(legend.position = "none") +
+  # Line between boxplots
+  geom_segment(aes(x = x1, xend = x2, y = line_y, yend = line_y), color = "black") +
+  # Add significance
+  annotate("text", x = (x1 + x2) / 2, y = line_y + y_buffer, label = annot_label) +  # update p-value accordingly
+  scale_fill_manual(values = my_group_colors)
+

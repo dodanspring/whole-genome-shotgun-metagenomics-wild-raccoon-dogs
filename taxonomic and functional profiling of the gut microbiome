@@ -1,0 +1,47 @@
+
+### Preparing custom host reference database
+
+bowtie2-build GCA_905146905.1_NYPRO_anot_genome_genomic.fna raccoon_dog
+
+
+### Microbial taxonomic and functional profiling
+
+biobakery_workflows wmgx --input /path/to/raw_seqeunce/directory --output /path/to/output/directory --threads 48 --local-jobs 4 --bypass-strain-profiling --contaminate-databases /path/to/custom host reference database
+
+# regrouping into KEGG Orthologues
+humann_databases --download utility_mapping full /path/to/store/mapping files
+humann_regroup_table --input genefamlies.tsv --groups uniref90_ko --output KO.tsv
+
+# splitting humann3 results into stratified and unstratified
+humann_split_stratified_table --input pathabundances.tsv --output /path/to/output/directory
+
+### Viral taxonomy analysis
+## {FILE}: sample name of quality controlled metagenomics reads from kneaddata results
+## "custom.config" and "params.yml" available at https://deng-lab.github.io/viroprofiler/tutorial/
+
+nextflow run deng-lab/viroprofiler -r v0.2.4 -profile singularity --input {FILE} -c custom.config -params-file params.yml --outdir {FILE}
+
+### Antimicrobial resistance gene (ARG) prediction
+# preparing the CARD database for analysis
+rgi clean --local
+
+rgi load --card_json /path/to/card.json --local
+
+rgi card_annotation -i /path/to/card.json > card_annotation.log 2>&1
+rgi load -i /path/to/card.json --card_annotation card_database_v3.2.9.fasta --local
+
+rgi wildcard_annotation -i wildcard --card_json /path/to/card.json -v 4.0.2 > wildcard_annotation.log 2>&1
+rgi load --wildcard_annotation wildcard_database_v4.0.2.fasta --card_json /path/to/card.json --wildcard_index /path/to/index-for-model-sequences.txt --card_annotation card_database_v3.2.9.fasta --local
+
+# predicting ARGs
+rgi bwt --read_one {FILE}.fastq.gz --output_file {FILE} --local --include_other_models -n 5 -a bowtie2
+
+### Virulence factors and mobile genetic elements prediction
+# virulence factors
+bowtie2-build VFDB_setA_nt.fas VFDB
+bowtie2 -x VFDB -U {FILE}.fastq.gz -S {FILE} -D 20 -R 3 -N 1 -L 20 -I S,1,0.50 -p 24
+
+# mobile genetic elements
+bowtie2-build MGEs_FINAL_99perc_trim.fasta
+bowtie2 -x mgedb -U {FILE}.fastq.gz -S {FILE} -D 20 -R 3 -N 1 -L 20 -I S,1,0.50 -p 24
+

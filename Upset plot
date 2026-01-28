@@ -1,0 +1,75 @@
+
+### Visualizing Upset plot
+library(phyloseq)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ComplexUpset)
+
+# phyobj: target phyloseq object
+otu_df <- as.data.frame(otu_table(phyobj))
+otu_df$ARG <- rownames(otu_df)
+
+tax_df <- as.data.frame(tax_table(phyobj))
+tax_df$ARG <- rownames(tax_df)
+
+#ta1: column name from taxonomy table
+arg_annotated <- merge(otu_df, tax_df[, c("ARG", "ta1")], by = "ARG")
+
+# Convert abundance to presence/absence
+binary_mat <- arg_annotated %>%
+  pivot_longer(cols = -c(ARG, ta1), names_to = "Sample", values_to = "Abundance") %>%
+  mutate(Present = as.integer(Abundance > 0)) %>%
+  select(-Abundance) %>%
+  pivot_wider(names_from = Sample, values_from = Present, values_fill = 0)
+
+# Extract sample metadata
+meta_df <- as.data.frame(sample_data(phyobj))
+meta_df$Sample <- rownames(meta_df)
+
+# Extract Week info and merge to binary matrix
+week_map <- meta_df[, c("Sample", "Week")]
+
+# Collapse into columns for each Week: 0w, 4w, 8w
+binary_long <- binary_mat %>%
+  pivot_longer(cols = -c(ARG, ta1), names_to = "Sample", values_to = "Present") %>%
+  left_join(week_map, by = "Sample") %>%
+  group_by(ARG, ta1, Week) %>%
+  summarise(Present = as.integer(sum(Present) > 0), .groups = "drop") %>%
+  pivot_wider(names_from = Week, values_from = Present, values_fill = 0)
+
+# Manually assign taxonomy of interest
+top_classes <- c(
+)
+
+# Manually assign matching colors (must be same number with top_classes)
+top_colors <- c(
+)
+
+# Reassign other taxonomies
+binary_long <- binary_long %>%
+  mutate(ta1_grouped = ifelse(ta1 %in% top_classes, ta1, "Other"))
+
+# Final color mapping
+drug_color_map <- setNames(c(top_colors, "gray80"), c(top_classes, "Other"))
+
+# Reorder the columns manually
+binary_wide <- binary_long %>%
+  select(ARG, ta1_grouped, `0w`, `4w`, `8w`)
+
+# Draw UpSet plot
+upset(
+  binary_wide,
+  intersect = c("0w", "4w", "8w"),
+  name = "upset plot",
+  base_annotations = list(
+    'Intersection size' = (
+      ggplot(mapping = aes(fill = ta1_grouped)) +
+        geom_bar(position = 'stack') +
+        scale_fill_manual(values = drug_color_map)
+    )
+  )
+)
+
+
+

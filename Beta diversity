@@ -1,0 +1,181 @@
+
+### Beta diversity
+library(vegan)
+library(ggplot2)
+library(dplyr)
+library(tidyverse)
+library(ggvegan)
+
+## phyobj: target phyloseq object (e.g., physeq_filtered, arg_ps)
+
+## Analyzing beta diversity by rehabilitation weeks
+# Calculate Bray-Curtis distance
+dist_bray <- phyloseq::distance(phyobj, method = "bray")
+micro_meta <- as(sample_data(phyobj), "data.frame")
+
+# Define function for pairwise PERMANOVA with PCoA plotting
+pairwise_adonis_with_pcoa <- function(dist_matrix, metadata, group_col, strata_col, colors) {
+  groups <- unique(metadata[[group_col]])
+  combs <- combn(groups, 2, simplify = FALSE)
+  results <- list()
+  plots <- list()
+  for (pair in combs) {
+    sel <- metadata[[group_col]] %in% pair
+    meta_sub <- metadata[sel, ]
+    dist_sub <- as.dist(as.matrix(dist_matrix)[sel, sel])
+    
+    a <- adonis2(
+      as.formula(paste("dist_sub ~", group_col)),
+      data = meta_sub,
+      strata = meta_sub[[strata_col]],
+      permutations = 999
+    )
+    results[[paste(pair, collapse = "_vs_")]] <- data.frame(
+      Group1 = pair[1],
+      Group2 = pair[2],
+      F = a$F[1],
+      R2 = a$R2[1],
+      p = a$`Pr(>F)`[1],
+      stringsAsFactors = FALSE
+    )
+    ord <- cmdscale(dist_sub, k = 2, eig = TRUE)
+    ord_df <- as.data.frame(ord$points)
+    colnames(ord_df) <- c("PCoA1", "PCoA2")
+    ord_df[[group_col]] <- meta_sub[[group_col]]
+    ord_df[[strata_col]] <- meta_sub[[strata_col]]
+    p <- ggplot(ord_df, aes(x = PCoA1, y = PCoA2, color = !!as.name(group_col))) +
+      geom_point(size = 3) +
+      geom_path(aes(group = !!as.name(strata_col)), color = "gray40", linetype = "dotted", linewidth = 0.5) +
+      stat_ellipse(aes(fill = !!as.name(group_col)), type = "t", geom = "polygon", alpha = 0.2, color = NA) +
+      scale_color_manual(values = colors) +
+      scale_fill_manual(values = colors) +
+      labs(
+        title = paste(pair[1], "vs", pair[2], "- PCoA"),
+        subtitle = paste0("PERMANOVA p = ", signif(a$`Pr(>F)`[1], 3)),
+        x = "PCoA1", y = "PCoA2"
+      ) +
+      theme_minimal()
+    
+    plots[[paste(pair, collapse = "_vs_")]] <- p
+  }
+  res_df <- do.call(rbind, results)
+  res_df$p_adj <- p.adjust(res_df$p, method = "BH")
+  return(list(results = res_df, plots = plots))
+}
+
+pairwise_output <- pairwise_adonis_with_pcoa(
+  dist_matrix = dist_bray,
+  metadata = micro_meta,
+  group_col = "Week",
+  strata_col = "ID",
+  colors = my_group_colors
+)
+
+print(pairwise_output$results)
+
+# Plot
+ggplot(ord_df_all, aes(x = PCoA1, y = PCoA2, color = Week)) +
+  geom_point(size = 3) +
+  stat_ellipse(aes(fill = Week), type = "t", geom = "polygon", alpha = 0.2, color = NA) +
+  scale_color_manual(values = my_group_colors) +
+  scale_fill_manual(values = my_group_colors) +
+  labs(
+    title = "Microbial Taxonomy - PCoA (All Groups)",
+    subtitle = subtitle_text,
+    x = "PCoA1", y = "PCoA2"
+  ) +
+  theme_minimal()
+
+## within group distance analysis
+dist_bray <- phyloseq::distance(phyobj, method = "bray")
+micro_meta <- as(sample_data(phyobj), "data.frame")
+micro_meta$Week <- factor(micro_meta$Week, levels = c("0w", "4w", "8w"))
+
+sample_names <- rownames(micro_meta)
+
+within_group_distances <- list()
+
+for (week in unique(micro_meta$Week)) {
+  samples_in_group <- sample_names[micro_meta$Week == week]
+  dist_matrix <- as.matrix(dist_bray)[samples_in_group, samples_in_group]
+  within_distances <- dist_matrix[lower.tri(dist_matrix)]
+  within_group_distances[[week]] <- within_distances
+}
+
+within_df <- do.call(rbind, lapply(names(within_group_distances), function(group) {
+  data.frame(Week = group, Distance = within_group_distances[[group]])
+}))
+
+# Plot
+ggplot(within_df, aes(x = Week, y = Distance, fill = Week)) +
+  geom_boxplot(outlier.shape = NA, color = "black", width = 0.6) +
+  geom_jitter(width = 0.1, size = 2, alpha = 0.6, color = "black") +
+  labs(
+    title = "Within-Group Beta Diversity Distance",
+    y = "Distance",
+    x = "Week"
+  ) +
+  scale_fill_manual(values = my_group_colors) +
+  theme_minimal() +
+  theme(
+    text = element_text(size = 12),
+    axis.text.x = element_text(angle = 0, hjust = 0.5)
+  ) +
+  stat_compare_means(
+    comparisons = list(c("0w", "4w"), c("0w", "8w"), c("4w", "8w")),
+    method = "wilcox.test",
+    label = "p.format"
+  )
+
+# Perform pairwise comparisons
+pairwise_results <- pairwise.wilcox.test(
+  within_df$Distance, within_df$Week, p.adjust.method = "BH"
+)
+print(pairwise_results)
+
+## Betadispersion analysis
+micro_meta$Week <- as.factor(micro_meta$Week)
+# Run betadisper
+bd <- betadisper(dist_bray, group = micro_meta$Week)
+disp_test <- permutest(bd, permutations = 999)
+print(disp_test)
+plot(bd)
+boxplot(bd, xlab = "Season", ylab = "Distance to group centroid")
+
+
+### Analyzing beta diversity by rescued season
+dist_bray <- phyloseq::distance(phyobj, method = "bray")
+meta <- as(sample_data(phyobj), "data.frame")
+adonis_res <- adonis2(dist_bray ~ Season, data = meta, permutations = 999)
+print(adonis_res)
+pval <- signif(adonis_res$`Pr(>F)`[1], 3)
+r2   <- signif(adonis_res$R2[1], 3)
+
+# Step 4: PCoA ordination
+ord_all <- cmdscale(dist_bray, eig = TRUE, k = 2)
+ord_df <- as.data.frame(ord_all$points)
+colnames(ord_df) <- c("PCoA1", "PCoA2")
+ord_df$SampleID <- rownames(ord_df)
+
+# Step 5: Merge with metadata
+ord_df <- cbind(ord_df, meta[ord_df$SampleID, ])
+
+# Step 6: PCoA Plot
+ggplot(ord_df, aes(x = PCoA1, y = PCoA2, color = Season)) +
+  geom_point(size = 3) +
+  stat_ellipse(aes(fill = Season), type = "t", geom = "polygon", alpha = 0.2, color = NA) +
+  scale_color_manual(values = my_group_colors) +
+  scale_fill_manual(values = my_group_colors) +
+  labs(
+    title = "Bray-Curtis PCoA (Season)",
+    subtitle = paste0("PERMANOVA: R² = ", r2, ", p = ", pval),
+    x = "PCoA1", y = "PCoA2"
+  ) +
+  theme_minimal()
+  
+## Betadispersion analysis
+group <- as.factor(meta$Season)
+bd <- betadisper(dist_bray, group)
+disp_test <- permutest(bd, permutations = 999)
+plot(bd)
+boxplot(bd, xlab = "Season", ylab = "Distance to group centroid")
